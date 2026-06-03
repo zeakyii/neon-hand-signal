@@ -1,0 +1,453 @@
+
+<h2 class="sr-only">Neon Light Controller — sculpt and morph glowing neon shapes with your hand gestures via webcam</h2>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+#app{width:100%;background:#000;position:relative;overflow:hidden;min-height:580px}
+#stage{position:relative;width:100%;height:580px}
+#neon-canvas,#hand-canvas,#bloom-canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+video{display:none}
+#ui-top{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:14px 18px;pointer-events:none;z-index:20}
+#badge{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:.15em;padding:6px 14px;border-radius:20px;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.4);transition:all .3s}
+#badge.on{color:#0ff;border-color:rgba(0,255,255,.5);background:rgba(0,255,255,.07)}
+#badge.draw{color:#f0f;border-color:rgba(255,0,255,.5);background:rgba(255,0,255,.07);animation:blink .9s infinite}
+#badge.freeze{color:#ff0;border-color:rgba(255,220,0,.5);background:rgba(255,220,0,.07)}
+#badge.explode{color:#f80;border-color:rgba(255,140,0,.5);background:rgba(255,140,0,.07)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.5}}
+#gestures{font-family:'Orbitron',monospace;font-size:8px;letter-spacing:.1em;text-align:right;line-height:2.2;color:rgba(255,255,255,.25)}
+#gestures span.lit{color:#0ff;animation:blink .7s infinite}
+#panel{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:rgba(0,0,0,.75);border:1px solid rgba(255,255,255,.1);border-radius:40px;padding:8px 18px;z-index:20;backdrop-filter:blur(10px)}
+.swatch{width:24px;height:24px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:all .2s;flex-shrink:0}
+.swatch:hover,.swatch.active{border-color:#fff;transform:scale(1.25)}
+.sep{width:1px;height:22px;background:rgba(255,255,255,.12)}
+.pbtn{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:.08em;padding:6px 12px;border-radius:20px;background:transparent;border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.55);cursor:pointer;transition:all .2s}
+.pbtn:hover{background:rgba(255,255,255,.08);color:#fff;border-color:rgba(255,255,255,.5)}
+#intro{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:30;text-align:center;pointer-events:none}
+#intro.gone{display:none}
+#cam-btn{font-family:'Orbitron',monospace;font-size:11px;letter-spacing:.12em;padding:14px 30px;border-radius:40px;background:rgba(0,0,0,.8);border:1px solid rgba(255,255,255,.25);color:#fff;cursor:pointer;transition:all .3s;pointer-events:auto;margin-bottom:12px}
+#cam-btn:hover{background:rgba(0,255,255,.1);border-color:rgba(0,255,255,.6);color:#0ff}
+#intro p{font-family:'Orbitron',monospace;font-size:8px;letter-spacing:.1em;color:rgba(255,255,255,.2);margin-top:6px}
+#hand-count{font-family:'Orbitron',monospace;font-size:8px;letter-spacing:.1em;color:rgba(255,255,255,.25);margin-top:4px}
+</style>
+
+<div id="app">
+  <div id="stage">
+    <canvas id="bloom-canvas"></canvas>
+    <canvas id="neon-canvas"></canvas>
+    <canvas id="hand-canvas"></canvas>
+    <video id="vid" playsinline></video>
+  </div>
+  <div id="ui-top">
+    <div>
+      <div id="badge">● STANDBY</div>
+      <div id="hand-count"></div>
+    </div>
+    <div id="gestures">
+      <span id="g1">✌ INDEX+MIDDLE → SCULPT</span><br>
+      <span id="g2">✋✋ BOTH HANDS OPEN → FREEZE</span><br>
+      <span id="g3">✋ ONE HAND OPEN → EXPLODE</span>
+    </div>
+  </div>
+  <div id="intro">
+    <button id="cam-btn">Activate Neon Grid</button>
+    <p>Hand gestures control living neon light</p>
+    <p>Show both hands for full control</p>
+  </div>
+  <div id="panel">
+    <div class="swatch active" style="background:#0ff" data-c="#00ffff" data-s="0,255,255"></div>
+    <div class="swatch" style="background:#f0f" data-c="#ff00ff" data-s="255,0,255"></div>
+    <div class="swatch" style="background:#ff3" data-c="#ffff33" data-s="255,255,51"></div>
+    <div class="swatch" style="background:#0f8" data-c="#00ff88" data-s="0,255,136"></div>
+    <div class="swatch" style="background:#f63" data-c="#ff6633" data-s="255,102,51"></div>
+    <div class="swatch" style="background:#88f" data-c="#8888ff" data-s="136,136,255"></div>
+    <div class="sep"></div>
+    <button class="pbtn" id="mode-btn">MODE: WAVE</button>
+    <button class="pbtn" id="clear-btn">RESET</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script>
+(function(){
+const app=document.getElementById('app');
+const nC=document.getElementById('neon-canvas');
+const hC=document.getElementById('hand-canvas');
+const bC=document.getElementById('bloom-canvas');
+const vid=document.getElementById('vid');
+const badge=document.getElementById('badge');
+const intro=document.getElementById('intro');
+const modeBtn=document.getElementById('mode-btn');
+const handCountEl=document.getElementById('hand-count');
+const g1=document.getElementById('g1'),g2=document.getElementById('g2'),g3=document.getElementById('g3');
+
+let nCtx,hCtx,bCtx,W,H;
+let col='#00ffff',colRgb='0,255,255';
+let mode=0; const MODES=['WAVE','HELIX','GRID','PLASMA','RIPPLE'];
+let frame=0,handX=.5,handY=.5;
+let frozen=false,exploding=false,explodeT=0;
+let lastGesture='none';
+let explodeCooldown=0;
+
+function resize(){
+  W=app.offsetWidth; H=580;
+  [nC,hC,bC].forEach(c=>{c.width=W;c.height=H});
+}
+function initCtx(){
+  nCtx=nC.getContext('2d');
+  hCtx=hC.getContext('2d');
+  bCtx=bC.getContext('2d');
+}
+
+function drawWave(t,hx,hy){
+  nCtx.clearRect(0,0,W,H);
+  const lines=18,pts=200;
+  for(let l=0;l<lines;l++){
+    const prog=l/(lines-1);
+    const baseY=H*.15+H*.7*prog;
+    const dist=Math.abs(prog-.5)*2;
+    const influence=Math.max(0,1-dist*2.5);
+    const amp=40+influence*120*(hy<.5?1+(.5-hy)*2:1);
+    const freq=1+influence*(hx-.5)*3;
+    const alpha=.15+influence*.85;
+    nCtx.beginPath();
+    for(let i=0;i<=pts;i++){
+      const x=(i/pts)*W;
+      const phase=t*.02+l*.3;
+      const y=baseY+Math.sin(x/W*Math.PI*2*freq+phase)*amp+Math.sin(x/W*Math.PI*4+phase*1.3)*amp*.3;
+      i===0?nCtx.moveTo(x,y):nCtx.lineTo(x,y);
+    }
+    nCtx.strokeStyle=`rgba(${colRgb},${alpha})`;
+    nCtx.lineWidth=1+influence*3;
+    nCtx.shadowBlur=8+influence*30;
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+}
+
+function drawHelix(t,hx,hy){
+  nCtx.clearRect(0,0,W,H);
+  const strands=3,pts=300;
+  for(let s=0;s<strands;s++){
+    const phase2=s*(Math.PI*2/strands);
+    nCtx.beginPath();
+    for(let i=0;i<=pts;i++){
+      const prog=i/pts;
+      const x=prog*W;
+      const speed=t*.015*(1+hx);
+      const r=W*.08*(1+hy*.5);
+      const twist=prog*Math.PI*6*(1+hx*.5);
+      const y=H*.5+Math.sin(twist+phase2+speed)*r*(1+Math.abs(prog-.5));
+      i===0?nCtx.moveTo(x,y):nCtx.lineTo(x,y);
+    }
+    nCtx.strokeStyle=`rgba(${colRgb},${.5+s*.15})`;
+    nCtx.lineWidth=2;
+    nCtx.shadowBlur=20;
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+  const beads=Math.floor(W/40);
+  for(let i=0;i<beads;i++){
+    const prog=i/beads,x=prog*W;
+    const twist=prog*Math.PI*6*(1+hx*.5)+t*.015*(1+hx);
+    for(let s=0;s<strands;s++){
+      const ph=s*(Math.PI*2/strands),r=W*.08*(1+hy*.5);
+      const y=H*.5+Math.sin(twist+ph)*r*(1+Math.abs(prog-.5));
+      nCtx.beginPath();
+      nCtx.arc(x,y,3+Math.abs(Math.sin(twist+ph))*4,0,Math.PI*2);
+      nCtx.fillStyle=`rgba(${colRgb},.9)`;
+      nCtx.shadowBlur=20;
+      nCtx.shadowColor=col;
+      nCtx.fill();
+    }
+  }
+}
+
+function drawGrid(t,hx,hy){
+  nCtx.clearRect(0,0,W,H);
+  const cols=16,rows=10,cx=hx*W,cy=hy*H;
+  for(let r=0;r<=rows;r++){
+    nCtx.beginPath();
+    for(let c=0;c<=cols;c++){
+      const x=(c/cols)*W,y=(r/rows)*H;
+      const dx=x-cx,dy=y-cy,d=Math.sqrt(dx*dx+dy*dy);
+      const pull=Math.max(0,1-d/200)*80;
+      const warp=pull*Math.sin(d*.05-t*.05);
+      const nx=x+dx/Math.max(d,1)*warp*.5;
+      const ny=y+dy/Math.max(d,1)*warp+Math.sin(x/W*Math.PI*2+t*.02)*15;
+      c===0?nCtx.moveTo(nx,ny):nCtx.lineTo(nx,ny);
+    }
+    const dist=Math.abs(r/rows-.5)*2;
+    nCtx.strokeStyle=`rgba(${colRgb},${.1+.5-dist*.4})`;
+    nCtx.lineWidth=.8;
+    nCtx.shadowBlur=6;
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+  for(let c=0;c<=cols;c++){
+    nCtx.beginPath();
+    for(let r=0;r<=rows;r++){
+      const x=(c/cols)*W,y=(r/rows)*H;
+      const dx=x-cx,dy=y-cy,d=Math.sqrt(dx*dx+dy*dy);
+      const pull=Math.max(0,1-d/200)*80;
+      const warp=pull*Math.sin(d*.05-t*.05);
+      const nx=x+dx/Math.max(d,1)*warp*.5;
+      const ny=y+dy/Math.max(d,1)*warp+Math.sin(x/W*Math.PI*2+t*.02)*15;
+      r===0?nCtx.moveTo(nx,ny):nCtx.lineTo(nx,ny);
+    }
+    nCtx.strokeStyle=`rgba(${colRgb},.15)`;
+    nCtx.lineWidth=.8;
+    nCtx.shadowBlur=6;
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+  nCtx.beginPath();
+  nCtx.arc(cx,cy,15,0,Math.PI*2);
+  nCtx.fillStyle=`rgba(${colRgb},.9)`;
+  nCtx.shadowBlur=40;
+  nCtx.shadowColor=col;
+  nCtx.fill();
+}
+
+function drawPlasma(t,hx,hy){
+  nCtx.clearRect(0,0,W,H);
+  for(let ring=0;ring<12;ring++){
+    const r=30+ring*H*.04*(1+hy*.5),wobble=ring*.4+t*.01;
+    nCtx.beginPath();
+    for(let i=0;i<=250;i++){
+      const a=(i/250)*Math.PI*2;
+      const noise=Math.sin(a*3+wobble)*20*hx+Math.sin(a*5-wobble*1.3)*15+Math.sin(a*7+t*.008)*10;
+      const x=W*.5+hx*W*.15+(r+noise)*Math.cos(a);
+      const y=H*.5+hy*H*.1+(r+noise)*Math.sin(a);
+      i===0?nCtx.moveTo(x,y):nCtx.lineTo(x,y);
+    }
+    nCtx.closePath();
+    nCtx.strokeStyle=`rgba(${colRgb},${.08+.15*(1-ring/12)})`;
+    nCtx.lineWidth=1.5;
+    nCtx.shadowBlur=15;
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+}
+
+function drawRipple(t,hx,hy){
+  nCtx.clearRect(0,0,W,H);
+  const cx=hx*W,cy=hy*H;
+  for(let r=0;r<20;r++){
+    const phase=(t*.03-r*.15)%(Math.PI*2);
+    const radius=(r/20)*Math.min(W,H)*.7+Math.sin(phase)*8;
+    const alpha=Math.max(0,Math.sin(phase+r*.2))*.7;
+    nCtx.beginPath();
+    nCtx.arc(cx,cy,radius,0,Math.PI*2);
+    nCtx.strokeStyle=`rgba(${colRgb},${alpha})`;
+    nCtx.lineWidth=1+alpha*3;
+    nCtx.shadowBlur=8+alpha*25;
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+  nCtx.beginPath();
+  nCtx.arc(cx,cy,8,0,Math.PI*2);
+  nCtx.fillStyle=`rgba(${colRgb},1)`;
+  nCtx.shadowBlur=50;
+  nCtx.shadowColor=col;
+  nCtx.fill();
+}
+
+function drawExplode(hx,hy,p){
+  nCtx.clearRect(0,0,W,H);
+  const cx=hx*W,cy=hy*H;
+  for(let i=0;i<32;i++){
+    const a=(i/32)*Math.PI*2;
+    const len=p*Math.min(W,H)*.6*(1+Math.sin(i*7)*.3);
+    nCtx.beginPath();
+    nCtx.moveTo(cx,cy);
+    nCtx.lineTo(cx+Math.cos(a)*len,cy+Math.sin(a)*len);
+    nCtx.strokeStyle=`rgba(${colRgb},${(1-p)*.8})`;
+    nCtx.lineWidth=2-p*1.5;
+    nCtx.shadowBlur=30*(1-p);
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+  for(let r=0;r<8;r++){
+    const rad=p*(50+r*40);
+    nCtx.beginPath();
+    nCtx.arc(cx,cy,rad,0,Math.PI*2);
+    nCtx.strokeStyle=`rgba(${colRgb},${Math.max(0,(1-p-.1*(8-r)))*.6})`;
+    nCtx.lineWidth=2;
+    nCtx.shadowBlur=20;
+    nCtx.shadowColor=col;
+    nCtx.stroke();
+  }
+}
+
+function drawHandSkeleton(lms,mirror){
+  if(!lms) return;
+  const conns=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+  hCtx.strokeStyle=`rgba(${colRgb},.25)`;
+  hCtx.lineWidth=1;
+  conns.forEach(([a,b])=>{
+    const la=lms[a],lb=lms[b];
+    const ax=mirror?(1-la.x)*W:la.x*W;
+    const bx=mirror?(1-lb.x)*W:lb.x*W;
+    hCtx.beginPath();
+    hCtx.moveTo(ax,la.y*H);
+    hCtx.lineTo(bx,lb.y*H);
+    hCtx.stroke();
+  });
+  lms.forEach((l,i)=>{
+    const x=mirror?(1-l.x)*W:l.x*W,y=l.y*H;
+    hCtx.beginPath();
+    hCtx.arc(x,y,i===8?5:2.5,0,Math.PI*2);
+    hCtx.fillStyle=i===8?`rgba(${colRgb},1)`:`rgba(${colRgb},.5)`;
+    hCtx.shadowBlur=i===8?16:6;
+    hCtx.shadowColor=col;
+    hCtx.fill();
+  });
+}
+
+function isOpenHand(lms){
+  const tips=[8,12,16,20],mcps=[5,9,13,17];
+  const up=tips.map((t,i)=>lms[t].y<lms[mcps[i]].y);
+  return up.filter(Boolean).length>=4;
+}
+
+function isTwoFingers(lms){
+  const tips=[8,12,16,20],mcps=[5,9,13,17];
+  const up=tips.map((t,i)=>lms[t].y<lms[mcps[i]].y);
+  return up[0]&&up[1]&&!up[2]&&!up[3];
+}
+
+function getHandCenter(lms){
+  const x=lms.reduce((s,l)=>s+l.x,0)/lms.length;
+  const y=lms.reduce((s,l)=>s+l.y,0)/lms.length;
+  return {x:1-x,y};
+}
+
+let lastResults=[];
+
+function onResults(res){
+  hCtx.clearRect(0,0,W,H);
+  const all=res.multiHandLandmarks||[];
+  lastResults=all;
+  const count=all.length;
+  handCountEl.textContent=count>0?`${count} HAND${count>1?'S':''} DETECTED`:'';
+
+  all.forEach((lms,i)=>drawHandSkeleton(lms,true));
+
+  if(exploding) return;
+  if(explodeCooldown>0){ explodeCooldown--; return; }
+
+  if(count===0){
+    if(frozen){ frozen=false; }
+    badge.className='on'; badge.textContent='● READY';
+    g1.className=''; g2.className=''; g3.className='';
+    return;
+  }
+
+  if(count===1){
+    const lms=all[0];
+    const open=isOpenHand(lms);
+    const twoFin=isTwoFingers(lms);
+    const c=getHandCenter(lms);
+    handX=c.x; handY=c.y;
+
+    if(open){
+      g1.className=''; g2.className=''; g3.className='lit';
+      badge.className='explode'; badge.textContent='● EXPLODE';
+      frozen=false;
+      exploding=true; explodeT=0;
+      explodeCooldown=40;
+    } else if(twoFin){
+      frozen=false;
+      g1.className='lit'; g2.className=''; g3.className='';
+      badge.className='draw'; badge.textContent='● SCULPTING';
+    } else {
+      if(frozen){ frozen=false; }
+      g1.className=''; g2.className=''; g3.className='';
+      badge.className='on'; badge.textContent='● READY';
+    }
+    return;
+  }
+
+  if(count>=2){
+    const open0=isOpenHand(all[0]);
+    const open1=isOpenHand(all[1]);
+    const twoFin0=isTwoFingers(all[0]);
+    const twoFin1=isTwoFingers(all[1]);
+
+    if(open0&&open1){
+      g1.className=''; g2.className='lit'; g3.className='';
+      badge.className='freeze'; badge.textContent='● FROZEN';
+      frozen=true;
+      return;
+    }
+
+    if((twoFin0||twoFin1)){
+      frozen=false;
+      g1.className='lit'; g2.className=''; g3.className='';
+      badge.className='draw'; badge.textContent='● SCULPTING';
+      const sculpting=twoFin0?all[0]:all[1];
+      const c=getHandCenter(sculpting);
+      handX=c.x; handY=c.y;
+      return;
+    }
+
+    frozen=false;
+    g1.className=''; g2.className=''; g3.className='';
+    badge.className='on'; badge.textContent='● READY';
+  }
+}
+
+let raf;
+function loop(){
+  frame++;
+  bCtx.clearRect(0,0,W,H);
+  bCtx.fillStyle='rgba(0,0,0,.55)';
+  bCtx.fillRect(0,0,W,H);
+
+  if(exploding){
+    explodeT+=.022;
+    if(explodeT>=1){ exploding=false; explodeT=0; badge.className='on'; badge.textContent='● READY'; }
+    else{ drawExplode(handX,handY,explodeT); }
+  } else if(!frozen){
+    if(mode===0) drawWave(frame,handX,handY);
+    else if(mode===1) drawHelix(frame,handX,handY);
+    else if(mode===2) drawGrid(frame,handX,handY);
+    else if(mode===3) drawPlasma(frame,handX,handY);
+    else if(mode===4) drawRipple(frame,handX,handY);
+  }
+
+  raf=requestAnimationFrame(loop);
+}
+
+async function start(){
+  intro.className='gone';
+  badge.textContent='● LOADING...';
+  try{
+    const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+    hands.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:.7,minTrackingConfidence:.6});
+    hands.onResults(onResults);
+    const stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'}});
+    vid.srcObject=stream; vid.play();
+    badge.className='on'; badge.textContent='● READY';
+    async function pf(){ if(vid.readyState>=2) await hands.send({image:vid}); requestAnimationFrame(pf); }
+    pf();
+  }catch(e){ badge.textContent='● ERROR'; badge.style.color='#f44'; intro.className=''; }
+}
+
+document.getElementById('cam-btn').addEventListener('click',start);
+document.getElementById('clear-btn').addEventListener('click',()=>{
+  nCtx.clearRect(0,0,W,H); exploding=false; frozen=false;
+});
+modeBtn.addEventListener('click',()=>{ mode=(mode+1)%MODES.length; modeBtn.textContent='MODE: '+MODES[mode]; });
+document.querySelectorAll('.swatch').forEach(s=>{
+  s.addEventListener('click',()=>{
+    document.querySelectorAll('.swatch').forEach(x=>x.classList.remove('active'));
+    s.classList.add('active');
+    col=s.dataset.c; colRgb=s.dataset.s;
+  });
+});
+
+window.addEventListener('resize',resize);
+resize(); initCtx(); loop();
+})();
+</script>
